@@ -20,14 +20,28 @@ class AudioDataset(Dataset):
         return self.data[idx], self.labels[idx]
 
 
+class AudioDatasetTest(Dataset):
+    def __init__(self, data, labels):
+        self.data = data
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], None
+
+
 # CONSTANT SR
 sampling_rate = 8000
 
 
-# CONSTANT FP
-paths = os.listdir('./train')
-paths = [os.path.join('./train', filename) for filename in paths]
+# CONSTANT FP (change to test for test)
+paths = os.listdir('./test')
+paths = [os.path.join('./test', filename) for filename in paths]
 
+tr_paths = os.listdir('./train')
+tr_paths = [os.path.join('./train', filename) for filename in tr_paths]
 
 # extract mfccs
 def mfccfication(sound, sampling_rate=sampling_rate, n=16):
@@ -54,10 +68,10 @@ def tensorify(array):
 
 # aligning with FP
 def process_audio(audio, maxlen):
-    label = audio['valence']
+    # label = audio['valence']
     mfccs = mfccfication(pad_or_trim(audio['audio_data'], maxlen))
     normalised = mfcc_norm(mfccs)
-    return normalised, label
+    return normalised #, label
 
 
 # determine the max length
@@ -73,21 +87,21 @@ def build_dataset(paths):
     mfcc_list = []
     val_list = []
 
-    maxlen = determine_max_length(mfcc_list)
-    print(maxlen)
+    maxlen = 174625
 
     # preprocess
     for audio in file_generator(paths):
-        mfcc, valence = process_audio(audio, maxlen)
+        mfcc = process_audio(audio, maxlen) # , valence
         mfcc_list.append(mfcc)
-        val_list.append(valence)
+        print(len(mfcc[0]))
+        # val_list.append(valence)
 
-    val_list = tensorify(val_list)
+    # val_list = tensorify(val_list)
 
     assert all(entry.shape == mfcc_list[0].shape for entry in mfcc_list)
-
-    dataset = AudioDataset(mfcc_list, val_list)
-    torch.save(dataset, 'audio_dataset.pth')
+    print(len(mfcc))
+    dataset = AudioDatasetTest(mfcc_list, None)
+    torch.save(dataset, 'audio_dataset_test.pth')
 
 
 # def pad_sequence(data, maxlen):
