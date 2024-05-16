@@ -8,6 +8,8 @@ from google.colab import drive
 from itertools import product
 import random
 import numpy as np
+from sklearn.model_selection import train_test_split
+
 
 seed = 42
 torch.manual_seed(seed)
@@ -129,9 +131,14 @@ results_df = pd.DataFrame(columns=['learning_rate', 'batch_size', 'dropout_prob'
 num_epochs = 50
 
 for wd, bs, dp, lr, arch, fc_sizes in product(coarse_params['weight_decay'], coarse_params['batch_size'], coarse_params['dropout_prob'], coarse_params['learning_rate'], coarse_params['architectures'], coarse_params['fc_layer_sizes']):
-    # Create DataLoader
-    train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=bs)
+    # Assuming train_dataset is a TensorDataset or similar
+    train_data, val_data, train_labels, val_labels = train_test_split(
+        train_dataset.data, train_dataset.labels, test_size=0.15, random_state=seed
+    )
+
+    # Create DataLoaders for the new train and validation sets
+    train_loader = DataLoader(AudioDataset(train_data, train_labels), batch_size=bs, shuffle=True)
+    val_loader = DataLoader(AudioDataset(val_data, val_labels), batch_size=bs, shuffle=False)
 
     # early stopping parameters
     early_stopping_patience = 5
@@ -144,46 +151,60 @@ for wd, bs, dp, lr, arch, fc_sizes in product(coarse_params['weight_decay'], coa
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
 
     for epoch in range(num_epochs):
-        model.train()
-        running_loss = 0.0
+      model.train()
+      running_loss = 0.0
 
-        for inputs, labels in train_loader:
-            inputs = inputs.unsqueeze(1).to(device)
-            labels = labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            labels = labels.view_as(outputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item() * inputs.size(0)
+      for inputs, labels in train_loader:
+          inputs = inputs.unsqueeze(1).to(device)
+          labels = labels.to(device)
+          optimizer.zero_grad()
+          outputs = model(inputs)
+          labels = labels.view_as(outputs)
+          loss = criterion(outputs, labels)
+          loss.backward()
+          optimizer.step()
+          running_loss += loss.item() * inputs.size(0)
 
-        epoch_loss = running_loss / len(train_loader.dataset)
+      epoch_loss = running_loss / len(train_loader.dataset)
 
-        # Early stopping
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
-            if epochs_without_improvement >= early_stopping_patience:
-                print(f"Early stopping at epoch {epoch+1}")
-                break
+      # Validate the model
+      model.eval()
+      val_loss = 0.0
+      with torch.no_grad():
+          for inputs, labels in val_loader:
+              inputs = inputs.unsqueeze(1).to(device)
+              labels = labels.to(device)
+              outputs = model(inputs)
+              labels = labels.view_as(outputs)
+              loss = criterion(outputs, labels)
+              val_loss += loss.item() * inputs.size(0)
+      val_loss /= len(val_loader.dataset)
 
-        # Log the results
-        new_row = pd.DataFrame({
-            'learning_rate': [lr],
-            'batch_size': [bs],
-            'dropout_prob': [dp],
-            'weight_decay': [wd],
-            'architecture': [str(arch)],
-            'fc_layer_sizes': [str(fc_sizes)],
-            'epoch': [epoch + 1],
-            'loss': [epoch_loss]
-        })
-        results_df = pd.concat([results_df, new_row], ignore_index=True)
+      # Early stopping
+      if val_loss < best_loss:
+          best_loss = val_loss
+          epochs_without_improvement = 0
+      else:
+          epochs_without_improvement += 1
+          if epochs_without_improvement >= early_stopping_patience:
+              print(f"Early stopping at epoch {epoch+1}")
+              break
 
-        print(f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
+      # Log the results
+      new_row = pd.DataFrame({
+          'learning_rate': [lr],
+          'batch_size': [bs],
+          'dropout_prob': [dp],
+          'weight_decay': [wd],
+          'architecture': [str(arch)],
+          'fc_layer_sizes': [str(fc_sizes)],
+          'epoch': [epoch + 1],
+          'train_loss': [epoch_loss],
+          'val_loss': [val_loss]
+      })
+      results_df = pd.concat([results_df, new_row], ignore_index=True)
+
+      print(f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Train Loss: {epoch_loss:.4f}, Val Loss: {val_loss:.4f}")
 
 # Save coarse search results to CSV
 results_df.to_csv('/content/drive/MyDrive/coarse_hyperparameter_search_results.csv', index=False)
@@ -192,7 +213,8 @@ results_df.to_csv('/content/drive/MyDrive/coarse_hyperparameter_search_results.c
 fine_results_df = pd.DataFrame(columns=['learning_rate', 'batch_size', 'dropout_prob', 'weight_decay', 'architecture', 'fc_layer_sizes', 'epoch', 'loss'])
 
 # Find the best hyperparameters from the coarse search
-best_params = results_df.loc[results_df['loss'].idxmin()]
+best_params = results_df.loc[results_df['val_loss'].idxmin()]
+
 
 # Define fine search ranges based on the best hyperparameters
 fine_param_ranges = {
@@ -221,14 +243,19 @@ for _ in range(num_fine_search_iterations):
     arch = fine_param_ranges['architecture'][0]
     fc_sizes = fine_param_ranges['fc_layer_sizes'][0]
 
+    # Split the train dataset into training and validation sets
+    train_data, val_data, train_labels, val_labels = train_test_split(
+        train_dataset.data, train_dataset.labels, test_size=0.15, random_state=seed
+    )
+
+    # Create DataLoaders for the new train and validation sets
+    train_loader = DataLoader(AudioDataset(train_data, train_labels), batch_size=bs, shuffle=True)
+    val_loader = DataLoader(AudioDataset(val_data, val_labels), batch_size=bs, shuffle=False)
+
     # Add early stopping parameters
     early_stopping_patience = 5
     best_loss = float('inf')
     epochs_without_improvement = 0
-
-    # Create DataLoader
-    train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=bs)
 
     # Initialize model, criterion, and optimizer
     model = CNN_reg(architecture=arch, dropout_prob=dp, fc_layer_sizes=fc_sizes).to(device)
@@ -252,9 +279,22 @@ for _ in range(num_fine_search_iterations):
 
         epoch_loss = running_loss / len(train_loader.dataset)
 
+        # Validate the model
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs = inputs.unsqueeze(1).to(device)
+                labels = labels.to(device)
+                outputs = model(inputs)
+                labels = labels.view_as(outputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * inputs.size(0)
+        val_loss /= len(val_loader.dataset)
+
         # Early stopping
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
+        if val_loss < best_loss:
+            best_loss = val_loss
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
@@ -271,17 +311,19 @@ for _ in range(num_fine_search_iterations):
             'architecture': [str(arch)],
             'fc_layer_sizes': [str(fc_sizes)],
             'epoch': [epoch + 1],
-            'loss': [epoch_loss]
+            'train_loss': [epoch_loss],
+            'val_loss': [val_loss]
         })
         fine_results_df = pd.concat([fine_results_df, new_row], ignore_index=True)
 
-        print(f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
+        print(f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Train Loss: {epoch_loss:.4f}, Val Loss: {val_loss:.4f}")
 
 # Save fine search results to CSV
 fine_results_df.to_csv('/content/drive/MyDrive/fine_hyperparameter_search_results.csv', index=False)
 
 # Find the best hyperparameters from the fine search
-best_fine_params = fine_results_df.loc[fine_results_df['loss'].idxmin()]
+best_fine_params = fine_results_df.loc[fine_results_df['val_loss'].idxmin()]
+
 
 # Extract the best hyperparameters
 best_lr = best_fine_params['learning_rate']
@@ -296,10 +338,28 @@ best_model = CNN_reg(architecture=best_arch, dropout_prob=best_dp, fc_layer_size
 criterion = nn.MSELoss().to(device)
 optimizer = optim.Adam(best_model.parameters(), lr=best_lr, weight_decay=best_wd)
 
-# Train the best_model with the best hyperparameters
-best_train_loader = DataLoader(train_dataset, batch_size=best_bs, shuffle=True)
+#
+test_dataset = torch.load('/content/drive/MyDrive/audio_dataset_test.pth')
+test_loader = DataLoader(test_dataset, batch_size=best_bs)
+
+#
 num_epochs = 50
 early_stopping_patience = 10
+best_loss = float('inf')
+epochs_without_improvement = 0
+
+# Split the train dataset into training and validation sets
+train_data, val_data, train_labels, val_labels = train_test_split(
+    train_dataset.data, train_dataset.labels, test_size=0.15, random_state=seed
+)
+
+# Create DataLoaders for the new train and validation sets
+train_loader = DataLoader(AudioDataset(train_data, train_labels), batch_size=best_bs, shuffle=True)
+val_loader = DataLoader(AudioDataset(val_data, val_labels), batch_size=best_bs, shuffle=False)
+
+# Train the best_model with the best hyperparameters
+num_epochs = 50
+early_stopping_patience = 5
 best_loss = float('inf')
 epochs_without_improvement = 0
 
@@ -307,7 +367,7 @@ for epoch in range(num_epochs):
     best_model.train()
     running_loss = 0.0
 
-    for inputs, labels in best_train_loader:
+    for inputs, labels in train_loader:
         inputs = inputs.unsqueeze(1).to(device)
         labels = labels.to(device)
         optimizer.zero_grad()
@@ -318,11 +378,24 @@ for epoch in range(num_epochs):
         optimizer.step()
         running_loss += loss.item() * inputs.size(0)
 
-    epoch_loss = running_loss / len(best_train_loader.dataset)
+    epoch_loss = running_loss / len(train_loader.dataset)
+
+    # Validate the model
+    best_model.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for inputs, labels in val_loader:
+            inputs = inputs.unsqueeze(1).to(device)
+            labels = labels.to(device)
+            outputs = best_model(inputs)
+            labels = labels.view_as(outputs)
+            loss = criterion(outputs, labels)
+            val_loss += loss.item() * inputs.size(0)
+    val_loss /= len(val_loader.dataset)
 
     # Early stopping
-    if epoch_loss < best_loss:
-        best_loss = epoch_loss
+    if val_loss < best_loss:
+        best_loss = val_loss
         epochs_without_improvement = 0
     else:
         epochs_without_improvement += 1
@@ -330,7 +403,7 @@ for epoch in range(num_epochs):
             print(f"Early stopping at epoch {epoch+1}")
             break
 
-    print(f"Training Best Model - Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
+    print(f"Training Best Model - Epoch [{epoch + 1}/{num_epochs}], Train Loss: {epoch_loss:.4f}, Val Loss: {val_loss:.4f}")
 
 # Prediction loop for test data
 if predict:
@@ -343,5 +416,5 @@ if predict:
             # Extract each prediction from the batch and append to the predictions list
             predictions.extend(outputs.cpu().numpy().flatten())
 
-    df_predictions = pd.DataFrame(predictions, columns=['Labels'])
+    df_predictions = pd.DataFrame(predictions, columns=['Label'])
     df_predictions.to_csv('/content/drive/MyDrive/predictions.csv', index=False)
