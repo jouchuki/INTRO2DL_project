@@ -26,17 +26,14 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Set predict to True to get the results on test
 predict = True
 
-
 def create_df_from_pkl_filenames(directory):
     files = os.listdir(directory)
     pkl_files = [file for file in files if file.endswith('.pkl')]
     df = pd.DataFrame(pkl_files, columns=['filename'])
     return df
 
-
 directory_path = '/content/drive/MyDrive/test'
 df = create_df_from_pkl_filenames(directory_path)
-
 
 # Define AudioDataset for labeled data
 class AudioDataset(Dataset):
@@ -50,7 +47,6 @@ class AudioDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx], self.labels[idx]
 
-
 # Define AudioDatasetTest for unlabeled data
 class AudioDatasetTest(Dataset):
     def __init__(self, data):
@@ -61,7 +57,6 @@ class AudioDatasetTest(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
-
 
 class CNN_reg(nn.Module):
     def __init__(self, architecture, dropout_prob, fc_layer_sizes):
@@ -104,47 +99,44 @@ class CNN_reg(nn.Module):
         x = self.fc_layers(x)
         return x
 
-
 # Load the dataset objects directly from the pickle files
 train_dataset = torch.load('/content/drive/MyDrive/audio_dataset.pth')
 test_dataset = torch.load('/content/drive/MyDrive/audio_dataset_test.pth')
 
 # Coarse Hyperparameter Search
+# Had to be shortened due to enormous time needed to check all combinations
 coarse_params = {
     'learning_rate': [0.01, 0.001, 0.0001],
-    'batch_size': [16, 32, 64],
+    'batch_size': [32],
     'dropout_prob': [0.3, 0.5, 0.7],
-    'weight_decay': [0.0, 0.0001, 0.001],
+    'weight_decay': [0.001, 0.0001, 0.01],
     'architectures': [
-        [(16, 3, 1), (32, 3, 1), (64, 3, 1)],  # Small architecture
+        # [(16, 3, 1), (32, 3, 1), (64, 3, 1)],  # Small architecture
         [(32, 3, 1), (64, 3, 1), (128, 3, 1)],  # Medium architecture
-        [(64, 3, 1), (128, 3, 1), (256, 3, 1)]  # Large architecture
+        # [(64, 3, 1), (128, 3, 1), (256, 3, 1)]  # Large architecture
     ],
     'fc_layer_sizes': [
-        [64, 32],
-        [128, 64, 32],
+        # [64, 32],
+        # [128, 64, 32],
         [256, 128, 64]
     ]
 }
 
 # Initialize an empty DataFrame for results
-results_df = pd.DataFrame(
-    columns=['learning_rate', 'batch_size', 'dropout_prob', 'architecture', 'fc_layer_sizes', 'epoch', 'loss'])
+results_df = pd.DataFrame(columns=['learning_rate', 'batch_size', 'dropout_prob', 'architecture', 'fc_layer_sizes', 'epoch', 'loss'])
 
 # Training and evaluation loop
 num_epochs = 50
 
-# Add early stopping parameters
-early_stopping_patience = 5
-best_loss = float('inf')
-epochs_without_improvement = 0
-
-for lr, bs, dp, wd, arch, fc_sizes in product(coarse_params['learning_rate'], coarse_params['batch_size'],
-                                              coarse_params['dropout_prob'], coarse_params['weight_decay'],
-                                              coarse_params['architectures'], coarse_params['fc_layer_sizes']):
+for wd, bs, dp, lr, arch, fc_sizes in product(coarse_params['weight_decay'], coarse_params['batch_size'], coarse_params['dropout_prob'], coarse_params['learning_rate'], coarse_params['architectures'], coarse_params['fc_layer_sizes']):
     # Create DataLoader
     train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=bs)
+
+    # early stopping parameters
+    early_stopping_patience = 5
+    best_loss = float('inf')
+    epochs_without_improvement = 0
 
     # Initialize model, criterion, and optimizer
     model = CNN_reg(architecture=arch, dropout_prob=dp, fc_layer_sizes=fc_sizes).to(device)
@@ -175,7 +167,7 @@ for lr, bs, dp, wd, arch, fc_sizes in product(coarse_params['learning_rate'], co
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= early_stopping_patience:
-                print(f"Early stopping at epoch {epoch + 1}")
+                print(f"Early stopping at epoch {epoch+1}")
                 break
 
         # Log the results
@@ -191,26 +183,49 @@ for lr, bs, dp, wd, arch, fc_sizes in product(coarse_params['learning_rate'], co
         })
         results_df = pd.concat([results_df, new_row], ignore_index=True)
 
-        print(
-            f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
+        print(f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
 
 # Save coarse search results to CSV
 results_df.to_csv('/content/drive/MyDrive/coarse_hyperparameter_search_results.csv', index=False)
 
 # Results DataFrame for fine search
-fine_results_df = pd.DataFrame(
-    columns=['learning_rate', 'batch_size', 'dropout_prob', 'weight_decay', 'architecture', 'fc_layer_sizes', 'epoch',
-             'loss'])
+fine_results_df = pd.DataFrame(columns=['learning_rate', 'batch_size', 'dropout_prob', 'weight_decay', 'architecture', 'fc_layer_sizes', 'epoch', 'loss'])
 
-# Add early stopping parameters
-early_stopping_patience = 10
-best_loss = float('inf')
-epochs_without_improvement = 0
+# Find the best hyperparameters from the coarse search
+best_params = results_df.loc[results_df['loss'].idxmin()]
+
+# Define fine search ranges based on the best hyperparameters
+fine_param_ranges = {
+    'learning_rate': [best_params['learning_rate'] * 0.5, best_params['learning_rate'] * 1.5],
+    'batch_size': [32, 32],
+    'dropout_prob': [best_params['dropout_prob'] * 0.5, best_params['dropout_prob'] * 1.5],
+    'weight_decay': [best_params['weight_decay'] * 0.5, best_params['weight_decay'] * 1.5],
+    'architecture': [eval(best_params['architecture'])],
+    'fc_layer_sizes': [eval(best_params['fc_layer_sizes'])]
+}
+
+
+# Number of fine search iterations
+num_fine_search_iterations = 10
+
+# Function to sample random values within a range
+def sample_random_value(param_range):
+    return np.random.uniform(param_range[0], param_range[1])
 
 # Fine search training and evaluation loop
-for lr, bs, dp, wd, arch, fc_sizes in product(fine_params['learning_rate'], fine_params['batch_size'],
-                                              fine_params['dropout_prob'], fine_params['weight_decay'],
-                                              fine_params['architecture'], fine_params['fc_layer_sizes']):
+for _ in range(num_fine_search_iterations):
+    lr = sample_random_value(fine_param_ranges['learning_rate'])
+    bs = int(sample_random_value(fine_param_ranges['batch_size']))
+    dp = sample_random_value(fine_param_ranges['dropout_prob'])
+    wd = sample_random_value(fine_param_ranges['weight_decay'])
+    arch = fine_param_ranges['architecture'][0]
+    fc_sizes = fine_param_ranges['fc_layer_sizes'][0]
+
+    # Add early stopping parameters
+    early_stopping_patience = 5
+    best_loss = float('inf')
+    epochs_without_improvement = 0
+
     # Create DataLoader
     train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=bs)
@@ -244,7 +259,7 @@ for lr, bs, dp, wd, arch, fc_sizes in product(fine_params['learning_rate'], fine
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= early_stopping_patience:
-                print(f"Early stopping at epoch {epoch + 1}")
+                print(f"Early stopping at epoch {epoch+1}")
                 break
 
         # Log the results
@@ -260,8 +275,7 @@ for lr, bs, dp, wd, arch, fc_sizes in product(fine_params['learning_rate'], fine
         })
         fine_results_df = pd.concat([fine_results_df, new_row], ignore_index=True)
 
-        print(
-            f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
+        print(f"LR: {lr}, BS: {bs}, DP: {dp}, WD: {wd}, ARCH: {arch}, FC: {fc_sizes}, Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
 
 # Save fine search results to CSV
 fine_results_df.to_csv('/content/drive/MyDrive/fine_hyperparameter_search_results.csv', index=False)
@@ -282,6 +296,42 @@ best_model = CNN_reg(architecture=best_arch, dropout_prob=best_dp, fc_layer_size
 criterion = nn.MSELoss().to(device)
 optimizer = optim.Adam(best_model.parameters(), lr=best_lr, weight_decay=best_wd)
 
+# Train the best_model with the best hyperparameters
+best_train_loader = DataLoader(train_dataset, batch_size=best_bs, shuffle=True)
+num_epochs = 50
+early_stopping_patience = 10
+best_loss = float('inf')
+epochs_without_improvement = 0
+
+for epoch in range(num_epochs):
+    best_model.train()
+    running_loss = 0.0
+
+    for inputs, labels in best_train_loader:
+        inputs = inputs.unsqueeze(1).to(device)
+        labels = labels.to(device)
+        optimizer.zero_grad()
+        outputs = best_model(inputs)
+        labels = labels.view_as(outputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item() * inputs.size(0)
+
+    epoch_loss = running_loss / len(best_train_loader.dataset)
+
+    # Early stopping
+    if epoch_loss < best_loss:
+        best_loss = epoch_loss
+        epochs_without_improvement = 0
+    else:
+        epochs_without_improvement += 1
+        if epochs_without_improvement >= early_stopping_patience:
+            print(f"Early stopping at epoch {epoch+1}")
+            break
+
+    print(f"Training Best Model - Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
+
 # Prediction loop for test data
 if predict:
     best_model.eval()  # Set the model to evaluation mode
@@ -290,7 +340,8 @@ if predict:
         for inputs in test_loader:
             inputs = inputs.unsqueeze(1).to(device)
             outputs = best_model(inputs)
-            predictions.append(outputs.item())
+            # Extract each prediction from the batch and append to the predictions list
+            predictions.extend(outputs.cpu().numpy().flatten())
 
     df_predictions = pd.DataFrame(predictions, columns=['Labels'])
     df_predictions.to_csv('/content/drive/MyDrive/predictions.csv', index=False)
